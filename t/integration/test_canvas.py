@@ -318,6 +318,46 @@ class test_chord:
         assert set(channels_after) == set(initial_channels)
 
     @flaky
+    def test_redis_subscribed_channels_leak_using_forget(self, manager):
+        if not manager.app.conf.result_backend.startswith('redis'):
+            raise pytest.skip('Requires redis result backend.')
+
+        manager.app.backend.result_consumer.on_after_fork()
+        initial_channels = get_active_redis_channels()
+        initial_channels_count = len(initial_channels)
+
+        total_chords = 10
+        async_results = [
+            chord([add.s(5, 6), add.s(6, 7)])(delayed_sum.s())
+            for _ in range(total_chords)
+        ]
+
+        manager.assert_result_tasks_in_progress_or_completed(async_results)
+
+        channels_before = get_active_redis_channels()
+        channels_before_count = len(channels_before)
+
+        assert set(channels_before) != set(initial_channels)
+        assert channels_before_count > initial_channels_count
+
+        # The total number of active Redis channels at this point
+        # is the number of chord header tasks multiplied by the
+        # total chord tasks, plus the initial channels
+        # (existing from previous tests).
+        chord_header_task_count = 2
+        assert channels_before_count <= \
+            chord_header_task_count * total_chords + initial_channels_count
+
+        for result in async_results:
+            result.forget()
+
+        channels_after = get_active_redis_channels()
+        channels_after_count = len(channels_after)
+
+        assert channels_after_count == initial_channels_count
+        assert set(channels_after) == set(initial_channels)
+
+    @flaky
     def test_replaced_nested_chord(self, manager):
         try:
             manager.app.backend.ensure_chords_allowed()
